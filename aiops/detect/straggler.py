@@ -70,12 +70,16 @@ class StepTimeMonitor:
         z_threshold: float = 3.0,
         ratio_threshold: float = 1.35,
         min_streak: int = 3,
+        min_delta_s: float = 0.002,
     ):
         self.job = job
         self.window = window
         self.z_threshold = z_threshold
         self.ratio_threshold = ratio_threshold
         self.min_streak = min_streak
+        # 除比值外还要有绝对增量：步耗时只有 1ms 时，1.35 倍也只是 0.35ms 的抖动，
+        # 真实 2 卡实验里就因此把"掉卡瞬间"误判成慢节点。
+        self.min_delta_s = min_delta_s
         self._samples: dict[str, list[float]] = {}
         self._streak: dict[str, _Counter] = {}
 
@@ -112,15 +116,19 @@ class StepTimeMonitor:
         # MAD 的稳健 z 分数需要足够的同组样本：n=2 时 z 的理论上限只有 1.48，
         # 阈值 3.0 永远达不到。因此小规模作业只用比值 + 连续次数，不叠加 z。
         use_z = len(ranks) >= 5
+        # 2 个 rank 时"中位数"就是两者的均值，value/median 的上限是 2.0，
+        # 会把"一个 rank 慢 20 倍"压成 1.9。小规模用最小值做参照系。
+        latest_values = [self._samples[r][-1] for r in ranks]
+        reference = median if len(ranks) >= 3 else min(latest_values)
         ratios: dict[str, float] = {}
         slow: list[str] = []
         for rank in ranks:
             value = self._samples[rank][-1]
-            ratio = value / median
+            ratio = value / reference if reference > 0 else 0.0
             z = (value - median) / scale if scale > 0 else 0.0
             ratios[rank] = ratio
             counter = self._streak.setdefault(rank, _Counter())
-            above_ratio = ratio >= self.ratio_threshold
+            above_ratio = ratio >= self.ratio_threshold and (value - reference) >= self.min_delta_s
             above_z = z >= self.z_threshold if use_z else True
             if above_ratio and above_z:
                 counter.streak += 1

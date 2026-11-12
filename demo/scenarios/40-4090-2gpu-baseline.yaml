@@ -1,0 +1,16 @@
+name: 40-4090-2gpu-baseline
+description: >
+  双卡 4090 上的真实 DDP 基线（NCCL，2 rank，PCIe NODE 拓扑）：测量跨卡 all-reduce
+  后的真实步耗时，验证控制面在真实多卡作业上不误动作。
+job:
+  steps: 200
+  backend: torch
+  world_size: 2
+  ckpt_every: 100
+  width: 2048
+  depth: 4
+  batch: 256
+  node: 4090-c
+injections: []
+expect:
+  recovered: true

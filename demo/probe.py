@@ -49,9 +49,16 @@ class HeartbeatProbe:
 
         steps = [b.get("step", 0) for b in beats.values()]
         step = min(steps) if steps else 0
+        # 跨 rank 比较用 forward 时间：DDP 里总 step_time 会被最慢的 rank 拖平，
+        # 只有"前向计算时间"能区分"这张卡算得慢"和"大家在等它"。
         step_times = {
-            rank: float(b.get("step_time_s", 0.0)) for rank, b in beats.items()
-            if b.get("state") == "running" and b.get("step_time_s", 0) > 0
+            rank: float(b.get("forward_s") or b.get("step_time_s", 0.0))
+            for rank, b in beats.items()
+            if b.get("state") == "running"
+            and (b.get("forward_s") or b.get("step_time_s", 0)) > 0
+            # 心跳过期说明该 rank 已经掉线：把它算进"慢 rank"会导致
+            # 掉卡瞬间被误判成慢节点（真实 2 卡实验里出现过 1.35x 的假阳性）。
+            and (now - float(b.get("ts", now))) <= 2.0
         }
         worst_step_time = max(step_times.values()) if step_times else 0.0
         state = "running"

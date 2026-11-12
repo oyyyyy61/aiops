@@ -235,6 +235,20 @@ class PolicyEngine:
                 reason=f"慢节点根因未定（{self._slow_text(report)}），先迁移一次验证",
                 **base,
             )
+        if (
+            report is not None
+            and report.score >= 2.0
+            and ctx.world_size > 1
+            and ctx.checkpoint_available
+        ):
+            return self._build(
+                S.STRATEGY_SHRINK,
+                reason=(
+                    f"无备机且单 rank 偏斜极大（{self._slow_text(report)}），"
+                    "缩容去掉慢 rank 比继续空转更划算"
+                ),
+                **base,
+            )
         return self._build(
             S.STRATEGY_OBSERVE,
             reason=f"慢节点根因未定且无迁移条件（{self._slow_text(report)}），先观测",

@@ -25,6 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--world-size", type=int, default=2)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--store-path", default="")
+    parser.add_argument("--module", default="demo.torch_ddp_trainer")
     known, rest = parser.parse_known_args(argv)
 
     attempt = protocol.next_attempt_name(known.run_dir)
@@ -46,12 +47,13 @@ def main(argv: list[str] | None = None) -> int:
                 "WORLD_SIZE": str(known.world_size),
                 "LOCAL_RANK": str(rank),
                 "AIOPS_ATTEMPT": attempt.split("-")[-1],
+                "STORE": store_path,
             }
         )
         argv_child = [
             sys.executable,
             "-m",
-            "demo.torch_ddp_trainer",
+            known.module,
             *rest,
             "--run-dir",
             known.run_dir,
@@ -65,11 +67,11 @@ def main(argv: list[str] | None = None) -> int:
     rc = 0
     for child in children:
         out, _ = child.communicate()
+        if out:
+            print(out, end="", flush=True)
         if child.returncode not in (0, None):
             rc = child.returncode
             sys.stderr.write(f"[torch-launcher] rank 退出码 {child.returncode}\n")
-            if out:
-                sys.stderr.write(out[-4000:])
     return rc
 
 

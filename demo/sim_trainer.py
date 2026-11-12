@@ -199,7 +199,7 @@ class Rank:
             if self._ctl_text("nan"):
                 loss = float("nan")
             elapsed = time.perf_counter() - t0
-            self.beat(step, elapsed, loss)
+            self.beat(step, elapsed, loss, forward_s=elapsed)
 
             if self.args.ckpt_every > 0 and step % self.args.ckpt_every == 0:
                 self._checkpoint(step)

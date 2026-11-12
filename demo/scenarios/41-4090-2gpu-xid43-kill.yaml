@@ -1,0 +1,26 @@
+name: 41-4090-2gpu-xid43-kill
+description: >
+  双卡机器上单卡挂死（Xid 43 + rank 1 被 SIGKILL）。没有备机，正确处置是
+  "缩容到 1 卡继续跑"，而不是反复重启把坏卡拉回来。验证真实 NCCL 作业的
+  强制清场与缩容恢复。
+job:
+  steps: 120
+  backend: torch
+  world_size: 2
+  ckpt_every: 20
+  width: 2048
+  depth: 4
+  batch: 256
+  node: 4090-c
+  spare_nodes: []
+  grace_s: 3
+injections:
+  - {at_step: 60, action: signal, rank: 1, value: 9}
+  - at_step: 60
+    action: event
+    vendor: nvidia
+    code: "43"
+    text: "NVRM: Xid (PCI:0000:39:00): 43, pid='1234', name=python, GPU stopped processing"
+expect:
+  any_strategy: [shrink, restart_in_place]
+  min_recoveries: 1

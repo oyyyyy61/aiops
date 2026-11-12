@@ -150,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             "world_size": world,
             "step": step,
             "step_time_s": round(step_time, 4),
+            "forward_s": round(float(extra.get("forward_s", 0.0)), 5),
             "loss": loss,
             "state": state,
             "node": args.node,
@@ -214,21 +215,29 @@ def main(argv: list[str] | None = None) -> int:
             while ctl(f"hang.{rank}") is not None:
                 time.sleep(0.2)
 
-        t0 = time.perf_counter()
+        x = torch.randn(args.batch, 128, device=device)
+        y = torch.randint(0, 4, (args.batch,), device=device)
+        # 限频/降频模拟：额外多跑几次前向。放在计时区间内，才能体现为"该 rank 算得慢"，
+        # 而不是"该 rank 在睡觉"——后者在真实 DDP 里不会转化为 forward 变慢。
+        repeats = 1
         throttle = ctl(f"throttle.{rank}")
         if throttle:
             try:
-                time.sleep(float(throttle) * 0.005)
+                repeats = max(1, int(float(throttle)))
             except ValueError:
-                pass
-        x = torch.randn(args.batch, 128, device=device)
-        y = torch.randint(0, 4, (args.batch,), device=device)
-        loss = nn.functional.cross_entropy(model(x), y)
+                repeats = 1
+        t0 = time.perf_counter()
+        t_fwd0 = time.perf_counter()
+        logits = model(x)
+        for _ in range(repeats - 1):
+            logits = model(x)
+        forward_s = time.perf_counter() - t_fwd0
+        loss = nn.functional.cross_entropy(logits, y)
         optim.zero_grad(set_to_none=True)
         loss.backward()
         optim.step()
         step_time = time.perf_counter() - t0
-        beat(step, step_time, float(loss.detach().cpu()))
+        beat(step, step_time, float(loss.detach().cpu()), forward_s=forward_s)
 
         if args.ckpt_every > 0 and step % args.ckpt_every == 0:
             save(step)

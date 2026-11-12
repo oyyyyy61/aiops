@@ -1,0 +1,20 @@
+name: 42-4090-2gpu-straggler
+description: >
+  双卡机器上单卡降频（用"多做 8 次前向"模拟算力下降到约 1/5）。真实 DDP 里
+  两边的总步耗时都会被最慢的卡拖平，只有 per-rank 前向时间能区分"这张卡慢"。
+  无备机时应缩容去掉慢 rank。
+job:
+  steps: 120
+  backend: torch
+  world_size: 2
+  ckpt_every: 20
+  width: 2048
+  depth: 4
+  batch: 256
+  node: 4090-c
+  spare_nodes: []
+injections:
+  - {at_step: 40, action: throttle_rank, rank: 1, value: 8}
+expect:
+  any_strategy: [shrink]
+  min_recoveries: 1
