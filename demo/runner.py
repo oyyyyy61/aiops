@@ -22,6 +22,7 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
+from aiops import metrics as metrics_mod
 from aiops.collect.base import Snapshot
 from aiops.detect.rules import Detector
 from aiops.detect.straggler import BenchMonitor, BenchResult
@@ -351,7 +352,7 @@ def run_scenario(
     budget = max_seconds or (scenario.steps * scenario.step_sleep * 6 + 120)
     result = supervisor.run(max_seconds=budget)
 
-    _write_artifacts(out_dir, scenario, result, injector, catalog)
+    _write_artifacts(out_dir, scenario, result, injector, catalog, supervisor)
     outcome = ScenarioOutcome(scenario=scenario, result=result, out_dir=out_dir)
     _check_expectations(outcome)
     return outcome
@@ -392,6 +393,7 @@ def _write_artifacts(
     result: RunResult,
     injector: Injector,
     catalog: Catalog,
+    supervisor: Supervisor | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "timeline.jsonl").write_text(
@@ -432,6 +434,12 @@ def _write_artifacts(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (out_dir / "summary.md").write_text(_summary_md(outcome_scenario=scenario, result=result), encoding="utf-8")
+    metrics_mod.write(
+        out_dir / "metrics.prom",
+        result.faults,
+        [r.as_dict() for r in result.recoveries],
+        [f.as_dict() for f in (supervisor.detector.active.values() if supervisor else [])],
+    )
 
 
 def _summary_md(outcome_scenario: Scenario, result: RunResult) -> str:
