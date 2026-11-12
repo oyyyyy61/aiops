@@ -1,0 +1,22 @@
+name: 33-4090-sigstop
+description: >
+  最像"GPU 挂死"的故障：rank 被 SIGSTOP 冻结，心跳停止但进程仍在、GPU 显存仍占用。
+  控制面读不到控制文件，只能靠进度停滞发现，并在 grace 超时后强制清理进程组。
+job:
+  steps: 100
+  backend: torch
+  world_size: 1
+  ckpt_every: 20
+  width: 2048
+  depth: 4
+  batch: 8192
+  node: 4090-a
+  grace_s: 3
+injections:
+  - {at_step: 40, action: signal, rank: 0, value: 19}
+threshold_overrides:
+  # 生产阈值 300s；演练下调到 8s，便于在几分钟内复现
+  - {code: UFC-JOB-001, metric: job.progress_age_s, value: 8}
+expect:
+  any_strategy: [restart_in_place, migrate]
+  min_recoveries: 1

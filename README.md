@@ -70,13 +70,31 @@ python -m aiops demo demo/scenarios/1*.yaml --out results
 而且"紧急检查点"把 RPO 从"一个保存周期"降到了 0；真正的难点在真机上的厂商码确认、
 NCCL 超时尺度、以及大规模下的误报率。**
 
+## 真实 4090 实测（2026-11-13）
+
+两台租用实例（**1 卡/节点**，RTX 4090 24GB，torch 2.12.1+cu130）上用真实进程 + 真实信号重跑：
+
+| 场景 | 注入 | 结果 | 停机 | MTTR | RPO |
+| --- | --- | --- | --- | --- | --- |
+| 30 baseline | 无 | 200 步跑完，0 误动作 | — | — | — |
+| 31 SIGKILL | `kill -9` | restart_in_place | 0.00s | 3.93s / 4.09s | 7 / 6 步 |
+| 32 SIGTERM | 优雅终止 | restart_in_place + 紧急保存 | 0.00s | 3.61s / 4.22s | **0 步** |
+| 33 SIGSTOP | 冻结进程（类 GPU 挂死） | restart_in_place + 强杀进程组 | 4.01s | 8.23s / 8.49s | 20 步 |
+
+同一套代码在两台机器上结果一致（差异 <5%，策略选择相同）；同型号 4090 之间的
+吞吐差异有 4%–12%，说明慢节点阈值必须按机器校准。
+
+真机还暴露了三个仿真掩盖不了的缺陷（优雅退出被误判成训练完成、强杀留下持有 GPU 的
+孤儿 rank、换环境后的 torchrun/CRLF 坑），详见 [docs/06-4090-results.md](docs/06-4090-results.md)。
+
 ## 文档
 
 - [统一故障码规范](docs/01-unified-fault-code.md)：命名、分级、字段、映射方法与置信度、扩展开流程
 - [故障监控与处理标准](docs/02-monitoring-standard.md)：检测 → 定位 → 决策 → 执行 → 验证，以及观测降级时的安全边界
 - [动态恢复策略](docs/03-recovery-strategies.md)：6 种策略、决策表、升级阶梯、检查点语义
 - [平台对接矩阵](docs/04-platform-integration.md)：torchrun/DDP、DeepSpeed、Megatron、vLLM、K8s
-- [实验记录](docs/05-experiments.md)：场景、指标、结论、下一步
+- [实验记录（仿真 + CPU DDP）](docs/05-experiments.md)：场景、指标、结论、下一步
+- [真实 4090 实测](docs/06-4090-results.md)：基线、故障注入、两台机器一致性、真机暴露的缺陷
 
 ## 与既有仓库的关系
 
@@ -87,11 +105,12 @@ NCCL 超时尺度、以及大规模下的误报率。**
 | [`ai-job-Operator`](https://github.com/oyyyyy61/ai-job-Operator) | AIJob/Volcano 作业对象，迁移与缩容最终落在 CR 上 |
 | [`model-gateway`](https://github.com/oyyyyy61/model-gateway) | 推理侧摘流/回填的负载均衡入口 |
 
-## 4090 上的下一步
+## 后续（真实 4090 已完成第一轮）
 
-`scripts/run_2x4090.sh` 给出双卡环境的完整跑法（NCCL、torchrun、场景回放、
-限频注入）。到货后优先补三件事：
+本轮已在两台 1 卡 4090 上验证了真实进程的故障处置与检查点恢复。还没做的：
 
-1. 用 `nvidia-smi`/DCGM 真机日志校准 Xid 与 ECC 路径的阈值与误报率；
-2. 在 2×4090 上跑 `03-straggler`（`nvidia-smi -lgc` 限频一张卡）与 `01-xid79`（重启驱动模拟）；
-3. 把 AMD/昇腾的 `assumed` 映射逐条替换成厂商手册里的原始 Error Code。
+1. **多卡 DDP 的卡间偏斜**：租用实例是 1 卡/节点且跨节点无直连网络，需要自有双卡机；
+2. **硬件降频注入**：容器内 `nvidia-smi -lgc` 无权限，需要 host 权限或自有机器；
+3. **ECC/NVLink/HCCS/IB 物理故障**：4090 无 ECC/NVLink，需 A100/H100/910B；
+4. **检查点恢复后的精度等价性**：固定随机种子对比 loss 曲线；
+5. 把 AMD/昇腾的 `assumed` 映射逐条替换成厂商手册里的原始 Error Code。

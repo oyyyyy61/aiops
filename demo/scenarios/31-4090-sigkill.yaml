@@ -1,0 +1,19 @@
+name: 31-4090-sigkill
+description: >
+  最坏情况：rank 被 SIGKILL（模拟掉卡/进程被内核杀），来不及紧急保存。
+  控制面只能从最后一次周期检查点恢复，RPO 应等于"距上次保存的步数"。
+job:
+  steps: 100
+  backend: torch
+  world_size: 1
+  ckpt_every: 20
+  width: 2048
+  depth: 4
+  batch: 8192
+  node: 4090-a
+  grace_s: 3
+injections:
+  - {at_step: 45, action: signal, rank: 0, value: 9}
+expect:
+  any_strategy: [restart_in_place, migrate]
+  min_recoveries: 1

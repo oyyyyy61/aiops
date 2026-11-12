@@ -60,6 +60,9 @@ class Scenario:
     steps: int = 200
     backend: str = "sim"
     platform: str = "any"
+    width: int = 0
+    depth: int = 0
+    batch: int = 0
     world_size: int = 2
     step_sleep: float = 0.08
     ckpt_every: int = 20
@@ -94,6 +97,9 @@ def load_scenario(path: str | Path) -> Scenario:
         steps=int(job.get("steps", 200)),
         backend=str(job.get("backend", "sim")),
         platform=str(job.get("platform", "any")),
+        width=int(job.get("width", 0)),
+        depth=int(job.get("depth", 0)),
+        batch=int(job.get("batch", 0)),
         world_size=int(job.get("world_size", 2)),
         step_sleep=float(job.get("step_sleep", 0.08)),
         ckpt_every=int(job.get("ckpt_every", 20)),
@@ -136,9 +142,10 @@ def apply_threshold_overrides(catalog: Catalog, overrides: Iterable[Mapping[str,
 
 
 class Injector:
-    def __init__(self, scenario: Scenario, control_dir: Path, clock=time.time):
+    def __init__(self, scenario: Scenario, control_dir: Path, run_dir: Path | None = None, clock=time.time):
         self.scenario = scenario
         self.control_dir = control_dir
+        self.run_dir = run_dir
         self.clock = clock
         self.start = clock()
         self.pending_events: list[VendorEvent] = []
@@ -179,6 +186,8 @@ class Injector:
             )
         elif injection.action == "nan":
             (self.control_dir / "nan").write_text("1", encoding="utf-8")
+        elif injection.action == "signal":
+            self._signal(injection)
         elif injection.action == "event":
             self.pending_events.append(
                 VendorEvent(
@@ -192,6 +201,34 @@ class Injector:
         else:
             raise ValueError(f"未知注入动作: {injection.action}")
         self.applied.append({**record, "label": injection.action})
+
+    def _signal(self, injection: Injection) -> None:
+        """给指定 rank 发真实信号：SIGKILL 模拟硬件崩溃，SIGSTOP 模拟 GPU 挂死。
+
+        信号绕过应用层，训练器读不到控制文件——这正是"最坏情况"：控制面
+        只能靠心跳/超时发现异常，紧急保存也来不及。
+        """
+
+        import os
+        import signal as signal_mod
+
+        if self.run_dir is None:
+            return
+        from demo import protocol
+
+        hb_dir = protocol.current_attempt_dir(self.run_dir)
+        for path in hb_dir.glob(f"rank-{injection.rank}.json"):
+            try:
+                pid = int(json.loads(path.read_text(encoding="utf-8")).get("pid", 0))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if pid <= 0:
+                continue
+            sig = int(injection.value or signal_mod.SIGKILL)
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
 
     def drain(self) -> list[VendorEvent]:
         events, self.pending_events = self.pending_events, []
@@ -258,7 +295,7 @@ def run_scenario(
         for node, value in (scenario.bench.get("values") or {}).items():
             bench.record(BenchResult(node=str(node), gpu="0", metric=metric, value=float(value)))
     probe_inner = HeartbeatProbe(run_dir, store, scenario.name, scenario.node, scenario.world_size)
-    injector = Injector(scenario, ctl_dir)
+    injector = Injector(scenario, ctl_dir, run_dir)
 
     def probe() -> Probe:
         p = probe_inner()
@@ -285,6 +322,12 @@ def run_scenario(
         scenario.node,
     ]
     if scenario.backend == "torch":
+        if scenario.width:
+            common += ["--width", str(scenario.width)]
+        if scenario.depth:
+            common += ["--depth", str(scenario.depth)]
+        if scenario.batch:
+            common += ["--batch", str(scenario.batch)]
         argv = [
             sys.executable,
             "-m",

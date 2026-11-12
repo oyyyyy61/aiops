@@ -14,6 +14,13 @@ results/
 # 参考仓库（只读克隆，不随本项目发布）
 .refs/
 
+# 远端机器凭据与临时脚本（绝不入库）
+.local/
+
+# 本地打包与远端拉取
+dist-*.tgz
+results-remote/
+
 # 编辑器
 .idea/
 .vscode/

@@ -1,0 +1,17 @@
+name: 30-4090-baseline
+description: >
+  RTX 4090 单卡真实训练基线：测量步耗时分布与检查点开销，验证控制面不会误动作。
+  租用的实例是 1 卡/节点，跨节点没有直连网络，所以多卡 DDP 的"卡间偏斜"只能在
+  仿真里验证，这里验证的是单卡真实作业的检查点与故障处置。
+job:
+  steps: 200
+  backend: torch
+  world_size: 1
+  ckpt_every: 100
+  width: 2048
+  depth: 4
+  batch: 8192
+  node: 4090-a
+injections: []
+expect:
+  recovered: true

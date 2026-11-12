@@ -35,11 +35,15 @@ EXIT_GRACEFUL = 42
 
 
 class TinyNet(nn.Module):
-    def __init__(self, width: int = 256):
+    """小型 MLP：宽度/深度可调，便于在 4090 上造出"每步几十毫秒"的真实负载。"""
+
+    def __init__(self, width: int = 256, depth: int = 3, in_dim: int = 128):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(128, width), nn.ReLU(), nn.Linear(width, width), nn.ReLU(), nn.Linear(width, 4)
-        )
+        layers: list[nn.Module] = [nn.Linear(in_dim, width), nn.ReLU()]
+        for _ in range(max(0, depth - 1)):
+            layers += [nn.Linear(width, width), nn.ReLU()]
+        layers.append(nn.Linear(width, 4))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):  # noqa: D401
         return self.net(x)
@@ -62,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ckpt-every", type=int, default=20)
     parser.add_argument("--node", default="localhost")
     parser.add_argument("--batch", type=int, default=128)
+    parser.add_argument("--width", type=int, default=256)
+    parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--lr", type=float, default=0.05)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--exclude-rank", action="append", default=[])
@@ -98,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         dist.init_process_group(backend=backend, timeout=timedelta(seconds=30))
 
     torch.manual_seed(1234)
-    model = TinyNet().to(device)
+    model = TinyNet(width=args.width, depth=args.depth).to(device)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank] if use_cuda else None)
     optim = torch.optim.SGD(model.parameters(), lr=args.lr)
 
@@ -200,7 +206,9 @@ def main(argv: list[str] | None = None) -> int:
             return 130
         if ctl("graceful") is not None or stop_flag["value"]:
             save(step - 1)
-            return finish(step - 1, EXIT_GRACEFUL, state="done")
+            # 注意：这里必须是 stopped 而不是 done。"优雅退出"不等于"训练完成"，
+            # 控制面要据此走恢复流程；写成 done 会被误判为正常结束。
+            return finish(step - 1, EXIT_GRACEFUL, state="stopped")
         if ctl(f"hang.{rank}") is not None:
             beat(step, 0.0, 0.0, state="running", hung=True)
             while ctl(f"hang.{rank}") is not None:

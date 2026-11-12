@@ -1,0 +1,20 @@
+name: 32-4090-sigterm
+description: >
+  可挽救的失败：rank 收到 SIGTERM（模拟抢占/优雅驱逐），能响应信号并保存检查点。
+  与 31 对比，验证"紧急保存"把 RPO 从若干步压到 0。
+job:
+  steps: 100
+  backend: torch
+  world_size: 1
+  ckpt_every: 20
+  width: 2048
+  depth: 4
+  batch: 8192
+  node: 4090-a
+  grace_s: 8
+injections:
+  - {at_step: 45, action: signal, rank: 0, value: 15}
+expect:
+  any_strategy: [restart_in_place, migrate]
+  min_recoveries: 1
+  max_rpo_steps: 0

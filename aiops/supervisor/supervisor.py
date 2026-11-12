@@ -302,16 +302,45 @@ class Supervisor:
         self.attempt += 1
         self._started_at = self.clock()
         self._clear_control()
+        # 独立进程组：强制清理时能连同 launcher 的子 rank 一起干掉，
+        # 否则 SIGSTOP 住的 rank 会变成持有 GPU 的孤儿进程。
+        popen_kwargs = {}
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
         self.proc = subprocess.Popen(
             argv,
             cwd=self.spec.cwd,
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            **popen_kwargs,
         )
         self.phase = PHASE_RUNNING
         self._log("job_start", f"attempt={self.attempt}", pid=self.proc.pid, node=self._node,
                   world_size=self._world_size, resume=resume)
+
+    def _kill_tree(self) -> None:
+        """强杀整个进程组/进程树（含 launcher 拉起的 rank）。"""
+
+        if self.proc is None:
+            return
+        pid = self.proc.pid
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+            )
+            return
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
 
     def _clear_control(self) -> None:
         if not self.spec.control_dir:
@@ -357,7 +386,7 @@ class Supervisor:
                 time.sleep(1.0)
         if self.proc.poll() is None:
             self._log("force_kill", f"grace={timeout}s 未退出")
-            self.proc.kill()
+            self._kill_tree()
             try:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
