@@ -841,6 +841,15 @@ codes:
     actions: [drain_instance, restart_instance, notify_only]
     checkpoint: none
     verify: [svc_healthy]
+    vendor_map:
+      - vendor: generic
+        codes: ["VLLM_ENGINE_DEAD"]
+        patterns:
+          - 'vLLM.*(engine|core).*(died|crash|fail)'
+          - 'EngineCore.*(died|error|exception)'
+          - 'Connection (refused|reset|aborted)'
+        confidence: community
+        note: "推理引擎子进程崩溃/端口不可达时，客户端看到的错误文本。"
     recurrence: {max_retries: 3, quarantine_after: 5, backoff_s: 10}
     signals:
       - {metric: svc.health, op: le, value: 0, for_samples: 3, clear_samples: 3}

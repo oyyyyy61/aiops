@@ -118,6 +118,21 @@ CUDA device-side assert（真实错误）
 配置见 `demo/inference/hosts.example.yaml`。细节与"双卡 vs 两台机器"的边界见
 [docs/07-inference-migration.md](docs/07-inference-migration.md)。
 
+## vLLM 迁移 + 回迁（2026-11-13）
+
+把自写 worker 换成**真实 vLLM 0.33 + Qwen2.5-0.5B**，在双卡机上做"源→备→回源"两次迁移：
+
+| 跳 | 方向 | 故障 | RPO | MTTD | MTTR | 验证 | 回放一致 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | GPU0 → GPU1 | 引擎被 SIGKILL（`UFC-INF-001`） | 0 | 1.65s | 46.1s | ✅ | 5/5 |
+| 2（回迁） | GPU1 → GPU0 | 同上 | 0 | 0.77s | 45.8s | ✅ | 5/5 |
+
+**结果没有偏移**：同一 prompt 在三个启动点（GPU0/GPU1/GPU0）的输出哈希完全一致
+（`670d9743542c` ×3），已完成样本回放 5/5 逐字匹配，校准集准确率 0.6 → 0.6 → 0.6。
+代价几乎全在**目标端引擎重启（~40s）**，状态搬运只有 ~4KB / 2s。
+
+细节与踩坑见 [docs/08-vllm-migration.md](docs/08-vllm-migration.md)。
+
 ## 文档
 
 - [统一故障码规范](docs/01-unified-fault-code.md)：命名、分级、字段、映射方法与置信度、扩展开流程
@@ -127,6 +142,7 @@ CUDA device-side assert（真实错误）
 - [实验记录（仿真 + CPU DDP）](docs/05-experiments.md)：场景、指标、结论、下一步
 - [真实 4090 实测](docs/06-4090-results.md)：基线、故障注入、两台机器一致性、真机暴露的缺陷
 - [推理任务跨机迁移](docs/07-inference-migration.md)：状态模型、检测翻译、上报、迁移与验证、双卡 vs 双机边界
+- [vLLM 迁移与回迁实测](docs/08-vllm-migration.md)：真实 vLLM、两次迁移、结果一致性与效果评估
 
 ## 与既有仓库的关系
 

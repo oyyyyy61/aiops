@@ -25,6 +25,7 @@ class HostSpec:
     gpu: int | None = None
     label: str = ""
     worker_port: int | None = None
+    vllm_port: int | None = None
 
     @property
     def display(self) -> str:
@@ -41,6 +42,7 @@ class HostSpec:
             gpu=(int(data["gpu"]) if data.get("gpu") is not None else None),
             label=str(data.get("label", "") or name),
             worker_port=(int(data["worker_port"]) if data.get("worker_port") is not None else None),
+            vllm_port=(int(data["vllm_port"]) if data.get("vllm_port") is not None else None),
         )
 
 
