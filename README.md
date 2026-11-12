@@ -98,6 +98,26 @@ NCCL 超时尺度、以及大规模下的误报率。**
 真机还暴露了三个仿真掩盖不了的缺陷（优雅退出被误判成训练完成、强杀留下持有 GPU 的
 孤儿 rank、换环境后的 torchrun/CRLF 坑），详见 [docs/06-4090-results.md](docs/06-4090-results.md)。
 
+## 推理任务跨机迁移（端到端，2026-11-13）
+
+在 2×4090 双卡机上跑通"出错 → 翻译 → 上报 → 保存 → 迁移 → 验证"：
+
+```text
+CUDA device-side assert（真实错误）
+  -> UFC-GPU-002 非法显存访问 / 上下文异常（S2）
+  -> alert.json / alert.txt 上报（可接 alertment 飞书链路）
+  -> 进度保存到 done=400（results.jsonl + progress.json，原子提交）
+  -> state/ 8 个文件 17.6KB 从 GPU0 搬到 GPU1
+  -> 目标机 --resume 从 400 续跑
+  -> 验证：进度推进、/health=200、同码错误未复发、结果不重不漏
+```
+
+实测：MTTD 1.77s、保存 8.9s、MTTR 10.88s、**RPO 0 样本**、完整性校验通过。
+
+用 `python -m demo.inference.controller --config <hosts.yaml>` 运行，
+配置见 `demo/inference/hosts.example.yaml`。细节与"双卡 vs 两台机器"的边界见
+[docs/07-inference-migration.md](docs/07-inference-migration.md)。
+
 ## 文档
 
 - [统一故障码规范](docs/01-unified-fault-code.md)：命名、分级、字段、映射方法与置信度、扩展开流程
@@ -106,6 +126,7 @@ NCCL 超时尺度、以及大规模下的误报率。**
 - [平台对接矩阵](docs/04-platform-integration.md)：torchrun/DDP、DeepSpeed、Megatron、vLLM、K8s
 - [实验记录（仿真 + CPU DDP）](docs/05-experiments.md)：场景、指标、结论、下一步
 - [真实 4090 实测](docs/06-4090-results.md)：基线、故障注入、两台机器一致性、真机暴露的缺陷
+- [推理任务跨机迁移](docs/07-inference-migration.md)：状态模型、检测翻译、上报、迁移与验证、双卡 vs 双机边界
 
 ## 与既有仓库的关系
 

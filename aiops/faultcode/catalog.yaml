@@ -92,6 +92,13 @@ codes:
         patterns: ['npu.*illegal.*(access|address)', 'aicore.*(abort|mmu.*fault)']
         confidence: assumed
         note: "AI Core 异常码归 UFC-GPU-007，这里只收地址类错误，避免一码两义。"
+      - vendor: generic
+        codes: ["CUDA_DEVICE_ASSERT", "CUDA_ILLEGAL_ACCESS"]
+        patterns:
+          - 'CUDA error:.*(device-side assert|illegal memory access|unspecified launch failure)'
+          - 'device-side assert triggered'
+        confidence: community
+        note: "容器/推理进程能看到的 CUDA 运行时错误文本；看不到 dmesg Xid 时的主要证据。"
     runbook:
       - 保留崩溃现场（CUDA_LAUNCH_BLOCKING=1 可复现则优先怀疑代码）。
       - 从最近检查点重启，连续 2 次同卡复现则隔离该卡。

@@ -1,0 +1,18 @@
+﻿# 示例：控制器跑在有 SSH 通道的机器上，源机/目标机各一台
+hosts:
+  source: {host: 10.0.0.11, port: 22, user: root, password: "<password>"}
+  target: {host: 10.0.0.12, port: 22, user: root, password: "<password>"}
+job:
+  name: infer-demo
+  total: 1200
+  batch: 8
+  ckpt_every: 64
+  port: 18000
+  remote_root: /root/aiops
+fault:
+  mode: device-assert   # device-assert | cuda-oom | none
+  at: 400
+run:
+  grace_s: 8
+  hang_s: 6
+  verify_samples: 24
