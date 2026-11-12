@@ -1,0 +1,13 @@
+name: 10-torch-baseline
+description: >
+  真实 PyTorch DDP 作业（本机 CPU/gloo 双 rank，4090 上自动切 NCCL）跑通基线，
+  验证同一套监督器与心跳协议可以驱动真实训练框架。
+job:
+  steps: 30
+  backend: torch
+  world_size: 2
+  ckpt_every: 10
+  node: localhost
+injections: []
+expect:
+  recovered: true

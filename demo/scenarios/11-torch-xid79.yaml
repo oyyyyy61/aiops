@@ -1,0 +1,24 @@
+﻿name: 11-torch-xid79
+description: >
+  真实 DDP 作业遇到 Xid 79：作业只跑到第 10 步，控制面必须紧急保存、迁移到
+  备用节点、从检查点续训。注意死掉的 rank 会让另一张卡在 allreduce 里挂住，
+  这正是需要"事件驱动 + 强制清场"的原因。
+job:
+  steps: 40
+  backend: torch
+  world_size: 2
+  ckpt_every: 10
+  node: localhost
+  spare_nodes: [localhost-b]
+  grace_s: 6
+injections:
+  - {at_step: 10, action: die_rank, rank: 1}
+  - at_step: 10
+    action: event
+    vendor: nvidia
+    code: "79"
+    text: "NVRM: Xid (PCI:0000:2d:00): 79, pid='4242', name=python, GPU has fallen off the bus."
+expect:
+  any_strategy: [evacuate, migrate]
+  max_rpo_steps: 12
+  min_recoveries: 1

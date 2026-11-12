@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# 运行产物（实验可重现，产物不入库）
+runs/
+results/
+*.log
+
+# 参考仓库（只读克隆，不随本项目发布）
+.refs/
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

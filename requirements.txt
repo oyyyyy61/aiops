@@ -1,0 +1,20 @@
+# 依赖
+
+唯一必需依赖：
+
+```bash
+python -m pip install pyyaml
+```
+
+可选（只有跑真实 PyTorch DDP 对照实验才需要）：
+
+```bash
+# CPU 验证（Windows/Linux 均可，2 rank gloo）
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# 2x4090（Ada, sm_89）：CUDA 12.1/12.4 及以上均可
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu124
+```
+
+标准库之外没有用到任何"运维框架"（无 Kubernetes 客户端、无 Prometheus 客户端），
+这是刻意的：控制面要能在一台裸机上跑起来，便于先把逻辑验证清楚。

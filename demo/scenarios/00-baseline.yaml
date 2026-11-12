@@ -1,0 +1,11 @@
+name: 00-baseline
+description: 对照组：不注入任何故障，验证控制面不会产生误动作（false positive = 0）。
+job:
+  steps: 60
+  world_size: 2
+  step_sleep: 0.05
+  ckpt_every: 20
+  node: gpu-node-15
+injections: []
+expect:
+  recovered: true

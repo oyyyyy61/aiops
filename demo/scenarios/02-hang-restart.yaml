@@ -1,0 +1,20 @@
+name: 02-hang-restart
+description: >
+  单 rank 卡死（进程存活、步数不推进、GPU 利用率归零）。没有硬件错误码，
+  只能靠进度停滞检测；应原地重启并从检查点续训。
+job:
+  steps: 100
+  world_size: 2
+  step_sleep: 0.05
+  ckpt_every: 10
+  node: gpu-node-15
+  spare_nodes: []
+injections:
+  - {at_step: 30, action: hang_rank, rank: 1}
+threshold_overrides:
+  # 生产阈值是 300s；演练为了在几秒内复现，显式下调到 6s
+  - {code: UFC-JOB-001, metric: job.progress_age_s, value: 6}
+expect:
+  any_strategy: [restart_in_place, migrate]
+  max_rpo_steps: 15
+  min_recoveries: 1

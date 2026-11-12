@@ -1,0 +1,7 @@
+        NPU ID                         : 0
+        Chip ID                        : 0
+        AICore(%)                      : 93
+        Memory-Usage(MB)               : 1024 / 65536
+        HBM-Usage(MB)                  : 48210 / 65536
+        Power-Usage(W)                 : 312.4
+        Temperature(C)                 : 41

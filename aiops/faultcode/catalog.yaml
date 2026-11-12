@@ -1,0 +1,939 @@
+# =====================================================================
+# UFO / UFC 统一故障码目录（Unified Fault Code Catalog）
+# ---------------------------------------------------------------------
+# 版本: 1.0.0   更新: 2026-11-12   维护: 集群运维组
+#
+# 字段说明见 aiops/faultcode/models.py 与 docs/01-unified-fault-code.md。
+# 约定：
+#   * id 格式 UFC-<DOMAIN>-<NNN>，域内序号永不复用；
+#   * severity S1..S4 决定检测预算、是否允许自动动作；
+#   * actions 只能取 models.KNOWN_ACTIONS 中的词；S1/S2 必须写 verify；
+#   * vendor_map.confidence: verified / community / assumed，
+#     assumed 表示语义推断、上真机前必须核对厂商手册。
+#
+# 目前只有 NVIDIA 直连真机（RTX 4090 / 5060），AMD 与昇腾的码来自
+# 内核日志、rocm-smi、npu-smi 的公开格式与语义归类，属于可回放验证的
+# 映射草案，不作为厂商官方结论。
+# =====================================================================
+
+version: "1.0.0"
+updated: "2026-11-12"
+
+domains:
+  GPU: 算力引擎
+  MEM: 显存 / HBM
+  LNK: 片内互联
+  NET: 节点间网络
+  PWR: 供电与功耗
+  THM: 温度与散热
+  DRV: 驱动与固件
+  NOD: 主机 / 节点
+  JOB: 训练作业
+  INF: 推理服务
+  OBS: 观测链路
+
+codes:
+  # ---------------------------- GPU ----------------------------
+  - id: UFC-GPU-001
+    name: GPU 掉总线（设备消失）
+    domain: GPU
+    severity: S1
+    scope: node
+    summary: GPU 从 PCIe 总线上消失，驱动无法再访问，本机所有 GPU 作业立即失去该设备。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node, fence_node, escalate_human]
+    checkpoint: emergency
+    verify: [fault_absent, node_ready]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: gpu.health, op: le, value: 0, for_samples: 1}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["79"]
+        patterns: ['Xid.*\b79\b', 'fallen off the bus', 'GPU is gone']
+        confidence: verified
+        family: "Tesla/RTX"
+        note: "Xid 79 是公认的掉卡；多数为硬件/供电/转接问题，不建议原地重试。"
+      - vendor: amd
+        codes: ["DEVICE_LOST"]
+        patterns: ['amdgpu.*(device lost|GPU reset failed)', 'drm.*device.*removed']
+        confidence: community
+      - vendor: ascend
+        codes: ["DEVICE_LOST"]
+        patterns: ['device\s*lost', 'npu-smi.*(lost|offline)']
+        confidence: assumed
+    runbook:
+      - 立即隔离节点，避免新作业调度到该机。
+      - 确认同机其它 GPU 与 NVLink 拓扑是否受影响，必要时整机下架。
+      - 生成硬件工单，保留 dmesg / nvidia-bug-report / npu-smi 日志。
+    tags: [hardware, fatal, node-level]
+
+  - id: UFC-GPU-002
+    name: 非法显存访问 / 上下文异常
+    domain: GPU
+    severity: S2
+    scope: job
+    summary: 内核或框架访问了非法地址，进程通常已崩溃；需区分应用越界与硬件地址翻译错误。
+    actions: [emergency_checkpoint, graceful_restart, quarantine_gpu, escalate_human]
+    checkpoint: emergency
+    verify: [step_advance, fault_absent]
+    recurrence: {max_retries: 2, quarantine_after: 3, backoff_s: 10}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["31", "13"]
+        patterns: ['Xid.*\b(31|13)\b', 'illegal memory access']
+        confidence: verified
+        note: "Xid 31 多为应用/框架 bug；若同卡重复出现 2 次以上升级为硬件嫌疑。"
+      - vendor: amd
+        codes: ["GPU_FAULT"]
+        patterns: ['amdgpu.*(page fault|GPU fault detected)', 'amdgpu.*VM_L2']
+        confidence: community
+      - vendor: ascend
+        codes: []
+        patterns: ['npu.*illegal.*(access|address)', 'aicore.*(abort|mmu.*fault)']
+        confidence: assumed
+        note: "AI Core 异常码归 UFC-GPU-007，这里只收地址类错误，避免一码两义。"
+    runbook:
+      - 保留崩溃现场（CUDA_LAUNCH_BLOCKING=1 可复现则优先怀疑代码）。
+      - 从最近检查点重启，连续 2 次同卡复现则隔离该卡。
+    tags: [software-or-hardware, ambiguous]
+
+  - id: UFC-GPU-003
+    name: GPU 停止处理（引擎挂死）
+    domain: GPU
+    severity: S1
+    scope: gpu
+    summary: GPU 侧不再响应，队列不再前进；通常需要复位设备，作业只能迁移。
+    actions: [emergency_checkpoint, migrate_job, quarantine_gpu, escalate_human]
+    checkpoint: emergency
+    verify: [fault_absent, bench_pass]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["43"]
+        patterns: ['Xid.*\b43\b', 'GPU stopped processing']
+        confidence: verified
+    runbook:
+      - 记录发生时间点与当时的显存/温度/功耗曲线。
+      - 复位后跑 5 分钟微基准，不达标则隔离。
+    tags: [hardware, fatal]
+
+  - id: UFC-GPU-004
+    name: 计算引擎挂起（无 Xid）
+    domain: GPU
+    severity: S2
+    scope: job
+    summary: 进程存活、GPU 利用率归零、训练步数长时间不推进，但驱动未报 Xid。
+    actions: [emergency_checkpoint, graceful_restart, migrate_job, quarantine_gpu]
+    checkpoint: both
+    verify: [step_advance, ckpt_advance]
+    recurrence: {max_retries: 2, quarantine_after: 3, backoff_s: 5}
+    signals:
+      - {metric: job.progress_age_s, op: gt, value: 180, for_samples: 3, clear_samples: 2}
+      - {metric: gpu.util, op: lt, value: 5, for_samples: 3, clear_samples: 2}
+    runbook:
+      - 先抓 py-spy / gdb 栈，判断是集合通信等待还是 kernel 卡死。
+      - 若同一步在多个 rank 复现，优先怀疑数据或框架版本，而非硬件。
+    tags: [hang, ambiguous]
+
+  - id: UFC-GPU-005
+    name: GPU 微控制器 / GSP 异常
+    domain: GPU
+    severity: S2
+    scope: gpu
+    summary: GPU 内部控制处理器异常（Xid 62/119/120），常伴随驱动通信超时。
+    actions: [emergency_checkpoint, graceful_restart, quarantine_gpu, escalate_human]
+    checkpoint: emergency
+    verify: [step_advance, fault_absent]
+    recurrence: {max_retries: 1, quarantine_after: 2, backoff_s: 30}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["62", "119", "120"]
+        patterns: ['Xid.*\b(62|119|120)\b', 'GSP RPC timeout', 'GSP error']
+        confidence: verified
+        family: "Turing+ (GSP 固件)"
+    runbook:
+      - 重启驱动后复查 GSP 固件版本与驱动是否匹配。
+      - 复发则隔离该卡并升级固件。
+    tags: [firmware]
+
+  - id: UFC-GPU-006
+    name: 上下文切换超时
+    domain: GPU
+    severity: S2
+    scope: gpu
+    summary: Xid 109，上下文切换超时，常见于抢占/调试工具/驱动缺陷。
+    actions: [graceful_restart, quarantine_gpu, escalate_human]
+    checkpoint: periodic
+    verify: [step_advance, fault_absent]
+    recurrence: {max_retries: 2, quarantine_after: 3, backoff_s: 10}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["109"]
+        patterns: ['Xid.*\b109\b', 'CTX SW timeout']
+        confidence: verified
+    runbook:
+      - 卸载挂接的 profiling / 调试工具后重试。
+    tags: [driver]
+
+  - id: UFC-GPU-007
+    name: AI Core 异常（昇腾）
+    domain: GPU
+    severity: S1
+    scope: gpu
+    summary: 昇腾 AI Core 执行异常，通常由 npu-smi 健康状态与 slog 共同确认。
+    actions: [emergency_checkpoint, migrate_job, quarantine_gpu, escalate_human]
+    checkpoint: emergency
+    verify: [fault_absent, bench_pass]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    vendor_map:
+      - vendor: ascend
+        codes: ["AI_CORE_EXCEPTION"]
+        patterns: ['aicore.*(exception|error)', 'ai core.*(exception|error)', 'AI Core Error']
+        confidence: assumed
+        family: "Ascend 910B"
+        note: "类别名映射；真机需回填 npu-smi 打印的原始 Error Code。"
+    runbook:
+      - 收集 npu-smi info -t health -i <id> 与 /var/log/npu/slog 对应时段日志。
+    tags: [ascend, hardware]
+
+  - id: UFC-GPU-008
+    name: GPU 复位 / 环形缓冲超时（AMD）
+    domain: GPU
+    severity: S2
+    scope: gpu
+    summary: amdgpu ring timeout 触发 GPU reset，进程通常被内核杀死。
+    actions: [emergency_checkpoint, graceful_restart, quarantine_gpu]
+    checkpoint: emergency
+    verify: [step_advance, fault_absent]
+    recurrence: {max_retries: 1, quarantine_after: 2, backoff_s: 30}
+    vendor_map:
+      - vendor: amd
+        codes: ["RING_TIMEOUT"]
+        patterns: ['amdgpu.*ring.*timeout', 'amdgpu.*GPU reset (begin|fail)', 'reset (required|needs reset)']
+        confidence: community
+        family: "Instinct MI 系列 / Radeon"
+    runbook:
+      - 记录 rocm-smi --showhw 的 reset 计数，判断是否为重复复位。
+    tags: [amd, hardware]
+
+  # ---------------------------- MEM ----------------------------
+  - id: UFC-MEM-001
+    name: 显存不可纠正 ECC 错误
+    domain: MEM
+    severity: S1
+    scope: gpu
+    summary: 显存出现不可纠正 ECC，数据已可能损坏，继续训练会污染权重与检查点。
+    actions: [emergency_checkpoint, evacuate_job, quarantine_gpu, escalate_human]
+    checkpoint: emergency
+    verify: [ecc_clear, bench_pass]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: gpu.ecc_uncorrected, op: gt, value: 0, for_samples: 1}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["48", "94", "95", "140"]
+        patterns: ['Xid.*\b(48|94|95|140)\b', 'Uncorrectable ECC', 'contained ECC error']
+        confidence: verified
+        note: "Xid 94 为已隔离，95 为未隔离（更危险），140 为未恢复。"
+      - vendor: amd
+        codes: ["RAS_UE"]
+        patterns: ['amdgpu.*(Uncorrectable|UE).*(error|RAS)', 'ras.*uncorrectable']
+        confidence: community
+      - vendor: ascend
+        codes: ["HBM_ECC_UNCORRECTED"]
+        patterns: ['hbm.*(ecc|multi.?bit).*(error|fail)', 'ecc.*uncorrect', 'HBM ECC']
+        confidence: assumed
+    runbook:
+      - 立刻冻结该卡：禁止新作业调度，标记为待维修。
+      - 检查最近一次检查点是否在故障时间点之前，避免恢复被污染的状态。
+      - 用 nvidia-smi -q -d ECC / rocm-smi --showretiredpages / npu-smi 采集证据。
+    tags: [hardware, data-integrity, fatal]
+
+  - id: UFC-MEM-002
+    name: 可纠正 ECC 超阈
+    domain: MEM
+    severity: S3
+    scope: gpu
+    summary: 可纠正 ECC 速率持续偏高，通常早于不可纠正错误出现，是换卡的领先指标。
+    actions: [notify_only, quarantine_gpu, escalate_human]
+    checkpoint: periodic
+    verify: [ecc_clear]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: gpu.ecc_corrected_rate, op: gt, value: 10, for_samples: 5, clear_samples: 10}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["92"]
+        patterns: ['Xid.*\b92\b', 'high single-bit ECC']
+        confidence: verified
+    runbook:
+      - 连续 3 天超阈排入计划性换卡窗口。
+    tags: [hardware, leading-indicator]
+
+  - id: UFC-MEM-003
+    name: 行重映射待处理 / 失败
+    domain: MEM
+    severity: S2
+    scope: gpu
+    summary: 显存坏行重映射记录失败或存在 pending 行，硬件可靠性下降。
+    actions: [emergency_checkpoint, migrate_job, quarantine_gpu, escalate_human]
+    checkpoint: emergency
+    verify: [fault_absent, bench_pass]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: gpu.row_remap_pending, op: gt, value: 0, for_samples: 1}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["63", "64"]
+        patterns: ['Xid.*\b(63|64)\b', 'row remap', 'page retirement']
+        confidence: verified
+        note: "63 为记录成功/事件，64 为记录失败；策略差别在是否允许继续使用。"
+    runbook:
+      - 在维护窗口清空重映射并复测；失败则换卡。
+    tags: [hardware]
+
+  - id: UFC-MEM-004
+    name: 显存 OOM（作业级）
+    domain: MEM
+    severity: S2
+    scope: job
+    summary: 显存不足导致 CUDA OOM，需要缩 batch / 序列长度或换卡型，不是硬件故障。
+    actions: [graceful_restart, reduce_batch, notify_only]
+    checkpoint: both
+    verify: [step_advance]
+    recurrence: {max_retries: 2, quarantine_after: 99, backoff_s: 5}
+    vendor_map:
+      - vendor: generic
+        codes: ["OOM"]
+        patterns: ['CUDA out of memory', 'OutOfMemoryError', 'HBM.*out of memory']
+        confidence: verified
+    runbook:
+      - 降低 micro-batch 或开启激活重计算；不要当成硬件故障告警。
+    tags: [capacity, job-level]
+
+  - id: UFC-MEM-006
+    name: 显存占用逼近上限
+    domain: MEM
+    severity: S3
+    scope: gpu
+    summary: 显存长期 >97%，碎片化风险高，容易演化为 OOM 或推理排队。
+    actions: [reduce_load, notify_only]
+    checkpoint: periodic
+    verify: [latency_slo]
+    signals:
+      - {metric: gpu.mem_used_ratio, op: gt, value: 0.97, for_samples: 6, clear_samples: 6}
+    runbook:
+      - 检查是否存在泄漏（显存随步数单调上涨）。
+    tags: [capacity]
+
+  # ---------------------------- LNK ----------------------------
+  - id: UFC-LNK-001
+    name: NVLink 错误 / CRC 超阈
+    domain: LNK
+    severity: S2
+    scope: node
+    summary: NVLink 重传与 CRC 错误上升，集合通信变慢或结果不可信。
+    actions: [emergency_checkpoint, migrate_job, quarantine_gpu, escalate_human]
+    checkpoint: emergency
+    verify: [fault_absent, bench_pass]
+    recurrence: {max_retries: 1, quarantine_after: 2, backoff_s: 10}
+    signals:
+      - {metric: gpu.nvlink_crc_rate, op: gt, value: 5, for_samples: 3, clear_samples: 6}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["74"]
+        patterns: ['Xid.*\b74\b', 'NVLink.*(error|CRC)', 'nvlink.*replay']
+        confidence: verified
+    runbook:
+      - nvidia-smi nvlink -e 查看错误计数，-s 查看链路状态。
+      - 检查该 GPU 与哪些对端相连，成对隔离。
+    tags: [interconnect]
+
+  - id: UFC-LNK-002
+    name: NVLink 链路降级 / 掉链
+    domain: LNK
+    severity: S2
+    scope: node
+    summary: 链路数量减少或带宽降到一半，DDP 训练会出现明显慢节点。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node, escalate_human]
+    checkpoint: emergency
+    verify: [bench_pass, fault_absent]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: gpu.nvlink_link_down, op: gt, value: 0, for_samples: 1}
+    runbook:
+      - 检查是否由 GPU 节能降频导致（P-state）后复测。
+    tags: [interconnect]
+
+  - id: UFC-LNK-003
+    name: HCCS 链路故障（昇腾）
+    domain: LNK
+    severity: S2
+    scope: node
+    summary: 昇腾片间 HCCS 链路异常，影响多卡并行。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node, escalate_human]
+    checkpoint: emergency
+    verify: [bench_pass, fault_absent]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    vendor_map:
+      - vendor: ascend
+        codes: ["HCCS_LINK_DOWN"]
+        patterns: ['hccs.*(down|error|fail)', 'HCCS link']
+        confidence: assumed
+    runbook:
+      - npu-smi info -t topo 查看拓扑变化。
+    tags: [ascend, interconnect]
+
+  - id: UFC-LNK-004
+    name: PCIe AER / 链路降速
+    domain: LNK
+    severity: S3
+    scope: node
+    summary: PCIe 重传或从 x16 降到 x8，主机到显存带宽下降。
+    actions: [notify_only, quarantine_node]
+    checkpoint: periodic
+    verify: [bench_pass]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: gpu.pcie_replay_rate, op: gt, value: 10, for_samples: 5, clear_samples: 10}
+    vendor_map:
+      - vendor: generic
+        codes: ["PCIE_AER"]
+        patterns: ['AER.*(error|correctable)', 'PCIe.*(replay|degraded)']
+        confidence: community
+    runbook:
+      - 检查转接卡/延长线/插槽，必要时整机维护。
+    tags: [interconnect]
+
+  - id: UFC-LNK-005
+    name: XGMI / Infinity Fabric 错误（AMD）
+    domain: LNK
+    severity: S2
+    scope: node
+    summary: AMD 多卡互联错误，表现为集合通信退化。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node]
+    checkpoint: emergency
+    verify: [bench_pass, fault_absent]
+    recurrence: {max_retries: 1, quarantine_after: 2, backoff_s: 10}
+    vendor_map:
+      - vendor: amd
+        codes: ["XGMI_ERROR"]
+        patterns: ['amdgpu.*xgmi.*(error|fail)', 'xgmi.*error']
+        confidence: community
+    runbook:
+      - 用 rocm-smi 查看 XGMI 链路计数与拓扑，确认是否为单链路退化。
+      - 先降载复测；仍报错则隔离该节点做整机维护。
+    tags: [amd, interconnect]
+
+  # ---------------------------- NET ----------------------------
+  - id: UFC-NET-001
+    name: 集合通信超时
+    domain: NET
+    severity: S2
+    scope: job
+    summary: NCCL/HCCL watchdog 超时，作业卡死；需区分单卡卡死与网络抖动。
+    actions: [emergency_checkpoint, graceful_restart, migrate_job, notify_only]
+    checkpoint: both
+    verify: [step_advance, bench_pass]
+    recurrence: {max_retries: 2, quarantine_after: 3, backoff_s: 20}
+    signals:
+      - {metric: job.nccl_timeout, op: gt, value: 0, for_samples: 1}
+    vendor_map:
+      - vendor: generic
+        codes: ["NCCL_TIMEOUT", "HCCL_TIMEOUT"]
+        patterns: ['NCCL.*(timeout|Watchdog)', 'HCCL.*(timeout|EI0006)', 'collective.*timeout']
+        confidence: verified
+    runbook:
+      - 打开 NCCL_DEBUG=INFO 复跑一步定位卡住的位置。
+      - 若每次都在同一 rank 超时，优先怀疑该卡/该节点。
+    tags: [network, ambiguous]
+
+  - id: UFC-NET-002
+    name: IB / RoCE 端口 Down
+    domain: NET
+    severity: S2
+    scope: node
+    summary: 高速网络端口 Down 或频繁 flap，节点应退出训练池。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node, escalate_human]
+    checkpoint: emergency
+    verify: [node_ready, fault_absent]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: node.ib_port_state, op: le, value: 0, for_samples: 1}
+    vendor_map:
+      - vendor: generic
+        codes: ["IB_PORT_DOWN"]
+        patterns: ['ib.*port.*(down|active.*down)', 'link.*flap', 'RoCE.*link down']
+        confidence: verified
+    runbook:
+      - 检查光模块与交换机端口计数。
+    tags: [network]
+
+  - id: UFC-NET-003
+    name: 网络丢包 / 重传率超阈
+    domain: NET
+    severity: S3
+    scope: node
+    summary: 丢包与重传上升，训练吞吐下降但作业未必失败。
+    actions: [notify_only, migrate_job]
+    checkpoint: periodic
+    verify: [bench_pass]
+    signals:
+      - {metric: node.net_retrans_rate, op: gt, value: 0.01, for_samples: 5, clear_samples: 10}
+    runbook:
+      - 先排查 PFC/ECN 配置，再排查光模块。
+    tags: [network]
+
+  - id: UFC-NET-004
+    name: 集合通信带宽不达标
+    domain: NET
+    severity: S3
+    scope: node
+    summary: all-reduce 微基准低于同型号基线 70%，往往是慢节点根因。
+    actions: [migrate_job, quarantine_node, notify_only]
+    checkpoint: periodic
+    verify: [bench_pass]
+    signals:
+      - {metric: node.allreduce_ratio, op: lt, value: 0.7, for_samples: 1}
+    runbook:
+      - 与同型号节点对比，排除单机拓扑差异后再判定。
+    tags: [network, straggler]
+
+  # ---------------------------- PWR ----------------------------
+  - id: UFC-PWR-001
+    name: 功率封顶 / 供电不足
+    domain: PWR
+    severity: S3
+    scope: gpu
+    summary: 触发 power brake 或 12V 供电告警，频率被限制，表现为慢节点。
+    actions: [reduce_load, notify_only, migrate_job]
+    checkpoint: periodic
+    verify: [latency_slo, bench_pass]
+    signals:
+      - {metric: gpu.power_brake, op: gt, value: 0, for_samples: 3, clear_samples: 6}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["POWER_BRAKE"]
+        patterns: ['power brake', 'SW Power Cap', 'HW Slowdown.*Power']
+        confidence: verified
+    runbook:
+      - 检查整机功耗预算与 PSU 冗余状态。
+    tags: [power]
+
+  - id: UFC-PWR-002
+    name: PSU / 供电单元故障
+    domain: PWR
+    severity: S1
+    scope: node
+    summary: 供电冗余丢失，随时可能整机掉电，必须立即迁移作业。
+    actions: [emergency_checkpoint, migrate_job, fence_node, escalate_human]
+    checkpoint: emergency
+    verify: [node_ready, fault_absent]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: node.psu_ok, op: le, value: 0, for_samples: 1}
+    runbook:
+      - 立即封禁节点并联系机房更换 PSU。
+    tags: [power, fatal]
+
+  # ---------------------------- THM ----------------------------
+  - id: UFC-THM-001
+    name: 温度超阈
+    domain: THM
+    severity: S2
+    scope: gpu
+    summary: 核心温度超过阈值触发降频，持续会加速硬件老化。
+    actions: [reduce_load, migrate_job, notify_only, quarantine_gpu]
+    checkpoint: periodic
+    verify: [latency_slo]
+    recurrence: {max_retries: 2, quarantine_after: 3, backoff_s: 60}
+    signals:
+      - {metric: gpu.temp_c, op: gt, value: 87, for_samples: 5, clear_samples: 10}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["THERMAL_SLOWDOWN"]
+        patterns: ['HW Slowdown.*Thermal', 'thermal slowdown']
+        confidence: verified
+      - vendor: ascend
+        codes: ["TEMP_ALARM"]
+        patterns: ['npu-smi.*temperature.*(high|alarm)', 'temp.*alarm']
+        confidence: assumed
+    runbook:
+      - 检查风道、风扇转速、进风温度；必要时限制该卡功率。
+    tags: [thermal]
+
+  - id: UFC-THM-002
+    name: 持续散热降频
+    domain: THM
+    severity: S3
+    scope: gpu
+    summary: 长时间运行在降频状态，吞吐稳定低于基线。
+    actions: [reduce_load, notify_only, migrate_job]
+    checkpoint: periodic
+    verify: [bench_pass]
+    signals:
+      - {metric: gpu.throttle_ratio, op: gt, value: 0.2, for_samples: 10, clear_samples: 10}
+    runbook:
+      - 与同型号卡对比同负载频率，判断是环境还是单卡散热器问题。
+    tags: [thermal, straggler]
+
+  - id: UFC-THM-003
+    name: 风扇 / 环境异常
+    domain: THM
+    severity: S3
+    scope: node
+    summary: 风扇转速异常或机房环境温度偏高。
+    actions: [notify_only, quarantine_node]
+    checkpoint: periodic
+    verify: [fault_absent]
+    signals:
+      - {metric: node.fan_rpm_ratio, op: lt, value: 0.3, for_samples: 5, clear_samples: 5}
+    runbook:
+      - 检查风扇转速、滤网与机房进风温度，必要时临时降载。
+      - 风扇故障件走备件更换流程。
+    tags: [thermal]
+
+  # ---------------------------- DRV ----------------------------
+  - id: UFC-DRV-001
+    name: 驱动崩溃 / 加载失败
+    domain: DRV
+    severity: S1
+    scope: node
+    summary: nvidia/amdgpu/npu 驱动崩溃或模块加载失败，节点上所有加速卡不可用。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node, fence_node, escalate_human]
+    checkpoint: emergency
+    verify: [node_ready, bench_pass]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: node.driver_ok, op: le, value: 0, for_samples: 1}
+    vendor_map:
+      - vendor: nvidia
+        codes: ["NVRM_FATAL"]
+        patterns: ['RmInitAdapter failed', 'NVRM.*(Oops|BUG:)', 'nvidia.*module.*(error|fail)', 'nvidia-modeset.*(ERROR|failed)']
+        confidence: community
+      - vendor: ascend
+        codes: ["DRIVER_ERROR"]
+        patterns: ['davinci.*(error|fail)', 'npu.*driver.*(error|fail)']
+        confidence: assumed
+    runbook:
+      - 保留 dmesg，判断是否需要重启节点或回滚驱动。
+    tags: [driver, fatal]
+
+  - id: UFC-DRV-002
+    name: 驱动 / 固件版本漂移
+    domain: DRV
+    severity: S4
+    scope: cluster
+    summary: 集群内驱动或固件版本不一致，导致故障语义与性能基线不可比。
+    actions: [notify_only, rollback_driver]
+    checkpoint: none
+    runbook:
+      - 维护版本矩阵，统一到经认证的组合。
+    tags: [fleet, config]
+
+  - id: UFC-DRV-003
+    name: 厂商管理工具不可用
+    domain: DRV
+    severity: S3
+    scope: observability
+    summary: nvidia-smi / rocm-smi / npu-smi 调用失败，硬件遥测出现盲区。
+    actions: [notify_only, escalate_human]
+    checkpoint: periodic
+    verify: [fault_absent]
+    signals:
+      - {metric: obs.tool_ok, op: le, value: 0, for_samples: 2}
+    runbook:
+      - 检查工具路径与权限（容器内常缺 /dev/nvidia* 或 npu 设备挂载）。
+      - 恢复前把该节点的硬件判定视为不可信，仅做告警。
+    tags: [observability, tooling]
+
+  # ---------------------------- NOD ----------------------------
+  - id: UFC-NOD-001
+    name: 节点 NotReady
+    domain: NOD
+    severity: S1
+    scope: node
+    summary: kubelet 心跳丢失或节点不可调度，其上作业需迁移。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node, fence_node]
+    checkpoint: emergency
+    verify: [node_ready, fault_absent]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: node.ready, op: le, value: 0, for_samples: 2, clear_samples: 3}
+    runbook:
+      - 区分 kubelet 挂死、网络分区、机器宕机三种情况。
+    tags: [kubernetes]
+
+  - id: UFC-NOD-002
+    name: 节点磁盘 / 共享存储不足
+    domain: NOD
+    severity: S2
+    scope: node
+    summary: 磁盘或共享存储写满，检查点保存失败并可能连带训练崩溃。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node, notify_only]
+    checkpoint: both
+    verify: [ckpt_advance]
+    recurrence: {max_retries: 1, quarantine_after: 2, backoff_s: 60}
+    signals:
+      - {metric: node.disk_used_ratio, op: gt, value: 0.92, for_samples: 3, clear_samples: 6}
+    runbook:
+      - 先清理过期检查点，再考虑迁移。
+    tags: [storage]
+
+  - id: UFC-NOD-003
+    name: 节点内存压力 / OOM Killer
+    domain: NOD
+    severity: S2
+    scope: node
+    summary: 主机内存不足，训练进程可能被 OOM killer 杀死。
+    actions: [graceful_restart, migrate_job, reduce_load, notify_only]
+    checkpoint: both
+    verify: [step_advance]
+    recurrence: {max_retries: 2, quarantine_after: 3, backoff_s: 30}
+    signals:
+      - {metric: node.mem_avail_ratio, op: lt, value: 0.08, for_samples: 3, clear_samples: 6}
+    runbook:
+      - 检查 dataloader worker 数与页缓存占用。
+    tags: [host]
+
+  - id: UFC-NOD-004
+    name: 节点宕机 / 重启
+    domain: NOD
+    severity: S1
+    scope: node
+    summary: 节点意外重启，作业与检查点可能丢失。
+    actions: [emergency_checkpoint, migrate_job, quarantine_node, escalate_human]
+    checkpoint: emergency
+    verify: [node_ready, fault_absent]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: node.uptime_s, op: lt, value: 120, for_samples: 1}
+    runbook:
+      - 排查硬件管理口事件日志（IPMI/iBMC）。
+    tags: [host, fatal]
+
+  # ---------------------------- JOB ----------------------------
+  - id: UFC-JOB-001
+    name: 训练作业无进度
+    domain: JOB
+    severity: S2
+    scope: job
+    summary: 步数长时间不推进，loss/检查点均不变，可能 hang 或通信死锁。
+    actions: [emergency_checkpoint, graceful_restart, migrate_job, notify_only]
+    checkpoint: both
+    verify: [step_advance]
+    recurrence: {max_retries: 2, quarantine_after: 3, backoff_s: 10}
+    signals:
+      - {metric: job.progress_age_s, op: gt, value: 300, for_samples: 2, clear_samples: 2}
+    runbook:
+      - 用 py-spy dump 全部 rank 栈，确认是否都停在 collective。
+    tags: [job-level, hang]
+
+  - id: UFC-JOB-002
+    name: 损失出现 NaN / Inf
+    domain: JOB
+    severity: S2
+    scope: job
+    summary: 训练发散，继续跑无意义且浪费算力。
+    actions: [graceful_restart, reduce_batch, notify_only]
+    checkpoint: periodic
+    verify: [step_advance]
+    recurrence: {max_retries: 1, quarantine_after: 2, backoff_s: 0}
+    signals:
+      - {metric: job.loss_nan, op: gt, value: 0, for_samples: 1, clear_samples: 2}
+    runbook:
+      - 回滚到发散前的检查点并降低学习率。
+    tags: [job-level, software]
+
+  - id: UFC-JOB-003
+    name: 数据加载停顿
+    domain: JOB
+    severity: S3
+    scope: job
+    summary: GPU 等待数据，利用率周期性掉零。
+    actions: [reduce_load, notify_only, graceful_restart]
+    checkpoint: periodic
+    verify: [step_advance]
+    signals:
+      - {metric: job.dataloader_wait_s, op: gt, value: 1.0, for_samples: 5, clear_samples: 5}
+    runbook:
+      - 调整 worker 数、缓存与存储带宽。
+    tags: [job-level, performance]
+
+  - id: UFC-JOB-004
+    name: 检查点保存失败
+    domain: JOB
+    severity: S2
+    scope: job
+    summary: 检查点无法落盘（权限、空间、超时），恢复能力实际已失效。
+    actions: [emergency_checkpoint, migrate_job, notify_only, escalate_human]
+    checkpoint: both
+    verify: [ckpt_advance]
+    recurrence: {max_retries: 1, quarantine_after: 2, backoff_s: 30}
+    signals:
+      - {metric: job.ckpt_fail, op: gt, value: 0, for_samples: 1}
+    runbook:
+      - 检查存储挂载与配额，必要时切到备用存储。
+    tags: [checkpoint, critical-path]
+
+  - id: UFC-JOB-005
+    name: 检查点过期
+    domain: JOB
+    severity: S3
+    scope: job
+    summary: 检查点时间过旧，一旦故障将丢失大量进度，RPO 超预算。
+    actions: [notify_only, emergency_checkpoint]
+    checkpoint: both
+    verify: [ckpt_advance]
+    signals:
+      - {metric: job.ckpt_age_s, op: gt, value: 1800, for_samples: 2, clear_samples: 2}
+    runbook:
+      - 缩短保存间隔或改为异步保存。
+    tags: [checkpoint, rpo]
+
+  - id: UFC-JOB-006
+    name: 作业被抢占 / 驱逐
+    domain: JOB
+    severity: S2
+    scope: job
+    summary: 优先级抢占、节点回收或驱逐导致作业中断，需要优雅保存并重新排队。
+    actions: [emergency_checkpoint, migrate_job, notify_only]
+    checkpoint: emergency
+    verify: [step_advance, ckpt_advance]
+    recurrence: {max_retries: 3, quarantine_after: 99, backoff_s: 5}
+    signals:
+      - {metric: job.evicted, op: gt, value: 0, for_samples: 1}
+    runbook:
+      - 检查 PriorityClass 与队列配额，必要时提高优先级。
+    tags: [scheduler]
+
+  - id: UFC-JOB-007
+    name: 慢节点 / 落后 rank
+    domain: JOB
+    severity: S2
+    scope: job
+    summary: 某个 rank 的步耗时显著高于同组中位数，全局吞吐被拖慢。
+    actions: [migrate_job, shrink_world_size, reduce_load, notify_only, quarantine_node]
+    checkpoint: periodic
+    verify: [step_advance, bench_pass]
+    recurrence: {max_retries: 2, quarantine_after: 3, backoff_s: 60}
+    signals:
+      - {metric: job.step_skew_ratio, op: gt, value: 1.35, for_samples: 6, clear_samples: 6}
+    runbook:
+      - 先用微基准区分「硬件慢」与「数据/负载不均」。
+      - 硬件慢 -> 迁移或缩容；数据不均 -> 调整采样，不要换卡。
+    tags: [straggler, performance]
+
+  # ---------------------------- INF ----------------------------
+  - id: UFC-INF-001
+    name: 推理实例健康检查失败
+    domain: INF
+    severity: S2
+    scope: service
+    summary: /health 连续失败，实例需摘流重启。
+    actions: [drain_instance, restart_instance, notify_only]
+    checkpoint: none
+    verify: [svc_healthy]
+    recurrence: {max_retries: 3, quarantine_after: 5, backoff_s: 10}
+    signals:
+      - {metric: svc.health, op: le, value: 0, for_samples: 3, clear_samples: 3}
+    runbook:
+      - 保留实例日志与显存快照，再重启。
+    tags: [inference]
+
+  - id: UFC-INF-002
+    name: 推理队列积压 / 延迟超 SLO
+    domain: INF
+    severity: S2
+    scope: service
+    summary: 排队深度或 p99 超过 SLO，需要扩容、降载或迁移。
+    actions: [reduce_load, restart_instance, migrate_job, notify_only]
+    checkpoint: none
+    verify: [latency_slo, svc_healthy]
+    recurrence: {max_retries: 2, quarantine_after: 4, backoff_s: 30}
+    signals:
+      - {metric: svc.p99_latency_s, op: gt, value: 5.0, for_samples: 5, clear_samples: 5}
+      - {metric: svc.queue_depth, op: gt, value: 32, for_samples: 5, clear_samples: 5}
+    runbook:
+      - 先判断是流量突增还是实例变慢（对比 GPU 利用率）。
+    tags: [inference, slo]
+
+  - id: UFC-INF-003
+    name: KV Cache 命中率下降
+    domain: INF
+    severity: S3
+    scope: service
+    summary: 前缀复用率下降或缓存碎片化，首 token 延迟升高。
+    actions: [notify_only, restart_instance, reduce_load]
+    checkpoint: none
+    verify: [latency_slo]
+    signals:
+      - {metric: svc.kv_hit_ratio, op: lt, value: 0.3, for_samples: 10, clear_samples: 10}
+    runbook:
+      - 命中率下降先看请求前缀分布是否变化，再看实例是否刚重启。
+      - 必要时重启实例重建 KV 缓存，并调整前缀缓存参数。
+    tags: [inference, performance]
+
+  - id: UFC-INF-004
+    name: 推理实例崩溃重启循环
+    domain: INF
+    severity: S1
+    scope: service
+    summary: 实例反复崩溃（CrashLoop），自动重启无法收敛。
+    actions: [drain_instance, restart_instance, quarantine_gpu, escalate_human]
+    checkpoint: none
+    verify: [svc_healthy, fault_absent]
+    recurrence: {max_retries: 0, quarantine_after: 1, backoff_s: 0}
+    signals:
+      - {metric: svc.restart_count, op: gt, value: 3, for_samples: 1}
+    runbook:
+      - 拉取前一次崩溃的 core/log，确认是否 OOM 或驱动错误。
+    tags: [inference, fatal]
+
+  # ---------------------------- OBS ----------------------------
+  - id: UFC-OBS-001
+    name: 观测组件不可用
+    domain: OBS
+    severity: S2
+    scope: observability
+    summary: exporter / 采集器掉线，控制面失去证据，必须降级为只读决策。
+    actions: [notify_only, escalate_human]
+    checkpoint: none
+    verify: [fault_absent]
+    signals:
+      - {metric: obs.exporter_up, op: le, value: 0, for_samples: 2, clear_samples: 3}
+    runbook:
+      - 重启 exporter；恢复前禁止自动迁移动作。
+    tags: [observability, safety]
+
+  - id: UFC-OBS-002
+    name: 指标陈旧
+    domain: OBS
+    severity: S2
+    scope: observability
+    summary: 最近一次成功采样距今过久，故障判断可能基于过期数据。
+    actions: [notify_only]
+    checkpoint: none
+    verify: [fault_absent]
+    signals:
+      - {metric: obs.stale_s, op: gt, value: 60, for_samples: 2, clear_samples: 2}
+    runbook:
+      - 检查抓取链路与 exporter 进程，确认是采集中断还是时钟漂移。
+      - 指标恢复前禁止自动迁移，避免基于过期证据做决策。
+    tags: [observability, safety]
+
+  - id: UFC-OBS-003
+    name: 指标冲突 / 缺失
+    domain: OBS
+    severity: S3
+    scope: observability
+    summary: 同一对象不同来源指标矛盾，或关键指标大量缺失。
+    actions: [notify_only, escalate_human]
+    checkpoint: none
+    verify: [fault_absent]
+    signals:
+      - {metric: obs.missing_ratio, op: gt, value: 0.2, for_samples: 3, clear_samples: 3}
+    runbook:
+      - 对比 nvidia-smi / DCGM / 平台上报三方数据，定位冲突来源。
+      - 指标冲突时按"最保守"假设处理：宁可不动，也不要误迁移。
+    tags: [observability, safety]

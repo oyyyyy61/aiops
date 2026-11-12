@@ -1,0 +1,22 @@
+name: 04-ecc-evacuate
+description: >
+  不可纠正 ECC（Xid 48）。数据完整性风险最高一级：必须冻结该卡、迁移作业，
+  并保留检查点证据，禁止原地重试。
+job:
+  steps: 100
+  world_size: 2
+  step_sleep: 0.05
+  ckpt_every: 10
+  node: gpu-node-15
+  spare_nodes: [gpu-node-16]
+injections:
+  - {at_step: 35, action: die_rank, rank: 0}
+  - at_step: 35
+    action: event
+    vendor: nvidia
+    code: "48"
+    text: "NVRM: Xid (PCI:0000:2d:00): 48, ECC: Double-bit error detected on DRAM"
+expect:
+  any_strategy: [evacuate, migrate]
+  max_rpo_steps: 15
+  min_recoveries: 1

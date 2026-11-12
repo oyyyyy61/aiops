@@ -1,0 +1,9 @@
+[Thu Nov 12 20:02:11 2026] amdgpu 0000:83:00.0: amdgpu: GPU fault detected: 147
+[Thu Nov 12 20:02:11 2026] amdgpu 0000:83:00.0: amdgpu: VM_L2_PROTECTION_FAULT_STATUS:0x00000000
+[Thu Nov 12 20:11:42 2026] amdgpu 0000:83:00.0: amdgpu: ring gfx_0.0.0 timeout, signaled seq=892341, emitted seq=892343
+[Thu Nov 12 20:11:42 2026] amdgpu 0000:83:00.0: amdgpu: GPU reset begin!
+[Thu Nov 12 20:11:47 2026] amdgpu 0000:83:00.0: amdgpu: GPU reset succeeded, trying to resume
+[Thu Nov 12 20:19:05 2026] amdgpu 0000:83:00.0: amdgpu: RAS: uncorrectable error detected in HBM
+[Thu Nov 12 20:19:06 2026] amdgpu 0000:83:00.0: amdgpu: Uncorrectable Error detected
+[Thu Nov 12 20:24:33 2026] amdgpu 0000:a3:00.0: amdgpu: XGMI error detected on link 2
+[Thu Nov 12 20:31:10 2026] amdgpu 0000:a3:00.0: amdgpu: device lost, needs reset

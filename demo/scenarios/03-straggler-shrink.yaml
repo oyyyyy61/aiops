@@ -1,0 +1,22 @@
+name: 03-straggler-shrink
+description: >
+  慢节点：rank 1 被限频（步耗时 6 倍）。微基准确认是硬件慢、且没有备机，
+  应缩容去掉该 rank 继续训练，而不是盲目重启或迁移。
+job:
+  steps: 120
+  world_size: 2
+  step_sleep: 0.05
+  ckpt_every: 20
+  node: gpu-node-15
+  spare_nodes: []
+bench:
+  metric: allreduce_gbps
+  baseline: 320
+  values:
+    gpu-node-15: 180
+    gpu-node-16: 322
+injections:
+  - {at_step: 20, action: throttle_rank, rank: 1, value: 6}
+expect:
+  any_strategy: [shrink, migrate]
+  min_recoveries: 1

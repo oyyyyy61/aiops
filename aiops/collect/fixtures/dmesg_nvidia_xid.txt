@@ -1,0 +1,11 @@
+[Thu Nov 12 20:14:03 2026] NVRM: Xid (PCI:0000:2d:00): 79, pid='12345', name=python, GPU has fallen off the bus.
+[Thu Nov 12 20:14:03 2026] NVRM: GPU at PCI:0000:2d:00: GPU-4f0f2c1a-1111-2222-3333-444455556666
+[Thu Nov 12 20:14:04 2026] nvidia-modeset: ERROR: GPU:0: nvAssert failed
+[Thu Nov 12 20:17:51 2026] NVRM: Xid (PCI:0000:3b:00): 31, pid='23456', name=python, Ch 00000010, intr 00000000. MMU Fault: ENGINE GRAPHICS GPCCLIENT_T1_0 faulted @ 0x7f0000000
+[Thu Nov 12 20:17:52 2026] NVRM: Xid (PCI:0000:3b:00): 13, pid='23456', name=python, Graphics Exception: ESR 0x404490=0x80000002
+[Thu Nov 12 20:22:10 2026] NVRM: Xid (PCI:0000:3b:00): 48, pid='23456', name=python, Robj 0x7f2a3c000000, offset 0x1a00, ECC: Double-bit error detected on DRAM
+[Thu Nov 12 20:25:30 2026] NVRM: Xid (PCI:0000:3b:00): 95, pid='23456', name=python, Uncontained ECC error
+[Thu Nov 12 20:31:12 2026] NVRM: Xid (PCI:0000:3b:00): 92, pid='34567', name=python, High single-bit ECC error rate detected
+[Thu Nov 12 20:40:44 2026] NVRM: Xid (PCI:0000:3b:00): 74, pid='34567', name=python, NVLink: Fatal error on link 3
+[Thu Nov 12 20:41:02 2026] NVRM: Xid (PCI:0000:3b:00): 109, pid='34567', name=python, CTX SW timeout
+[Thu Nov 12 20:45:00 2026] NVRM: Xid (PCI:0000:3b:00): 43, pid='34567', name=python, GPU stopped processing

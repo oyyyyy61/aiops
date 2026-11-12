@@ -1,0 +1,6 @@
+        NPU ID                         : 0
+        Chip ID                        : 0
+        Chip Logic ID                  : 0
+        Health Status                  : Alarm
+        Error Code                     : 0x8A00001
+        Error Information              : HBM multi-bit ECC error detected

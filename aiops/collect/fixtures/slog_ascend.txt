@@ -1,0 +1,5 @@
+[ERROR] 2026-11-12-20:03:12.541 [hccl_runner.cc:812] [Rank:2] HCCL timeout, waiting for collective op
+[ERROR] 2026-11-12-20:03:15.002 [npu_driver.cc:441] [Device:2] device lost, reset may be required
+[WARN]  2026-11-12-20:21:33.110 [hbm_manager.cc:207] HBM ECC multi-bit error detected on device 2
+[ERROR] 2026-11-12-20:21:33.115 [aicore_exec.cc:98] AICore exception: illegal instruction
+[ERROR] 2026-11-12-20:27:45.223 [hccs_link.cc:77] HCCS link 1 down

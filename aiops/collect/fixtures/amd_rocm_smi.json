@@ -1,0 +1,43 @@
+{
+  "card0": {
+    "GPU ID": "0x740f",
+    "Unique ID": "d0e6f4a2c3b1a9f8",
+    "Card Series": "AMD Instinct MI300X",
+    "Card Model": "AMD Instinct MI300X OAM",
+    "Card Vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
+    "Card SKU": "MI300X",
+    "PCI Bus": "0000:83:00.0",
+    "Serial Number": "6CCB1E2F4A1D",
+    "VBIOS version": "113-M3000100-101",
+    "Temperature (Sensor edge) (C)": "47.0",
+    "Temperature (Sensor junction) (C)": "55.0",
+    "Temperature (Sensor memory) (C)": "62.0",
+    "Average Graphics Package Power (W)": "412.0",
+    "GPU use (%)": "96",
+    "GPU Memory Allocated (VRAM%)": "82",
+    "VRAM Total Memory (B)": "206158430208",
+    "VRAM Total Used Memory (B)": "169093759795",
+    "GPU Throttle Status": "0",
+    "ECC CORRECTABLE": "0",
+    "ECC UNCORRECTABLE": "0"
+  },
+  "card1": {
+    "GPU ID": "0x740f",
+    "Unique ID": "d0e6f4a2c3b1a9f9",
+    "Card Series": "AMD Instinct MI300X",
+    "Card Model": "AMD Instinct MI300X OAM",
+    "PCI Bus": "0000:a3:00.0",
+    "Serial Number": "6CCB1E2F4A1E",
+    "Temperature (Sensor edge) (C)": "45.0",
+    "Temperature (Sensor junction) (C)": "53.0",
+    "Temperature (Sensor memory) (C)": "60.0",
+    "Average Graphics Package Power (W)": "398.0",
+    "GPU use (%)": "97",
+    "GPU Memory Allocated (VRAM%)": "82",
+    "VRAM Total Memory (B)": "206158430208",
+    "VRAM Total Used Memory (B)": "170000000000",
+    "GPU Throttle Status": "0",
+    "ECC CORRECTABLE": "0",
+    "ECC UNCORRECTABLE": "0"
+  }
+}

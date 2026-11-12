@@ -1,0 +1,15 @@
+name: 05-no-ckpt-failfast
+description: >
+  没有可用检查点时的作业崩溃。正确行为不是"重启试试"，而是停止自动动作、
+  升级人工——盲目重启会丢掉全部进度并浪费算力。
+job:
+  steps: 80
+  world_size: 2
+  step_sleep: 0.05
+  ckpt_every: 0
+  node: gpu-node-15
+  spare_nodes: [gpu-node-16]
+injections:
+  - {at_step: 25, action: die_rank, rank: 1}
+expect:
+  any_strategy: [fail_fast, observe]
